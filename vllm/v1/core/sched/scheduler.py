@@ -95,6 +95,15 @@ class Scheduler(SchedulerInterface):
         self.structured_output_manager = structured_output_manager
         self.is_encoder_decoder = vllm_config.model_config.is_encoder_decoder
 
+        # FastLibra Implementation Injection
+        try:
+            from vllm.fastlibra import UsageDependencyTree, CostModelSwapper
+            self.fastlibra_tree = UsageDependencyTree()
+            self.fastlibra_policy = CostModelSwapper()
+            logger.info("FastLibra Dependency Tree and Cost Model Swapper initialized successfully.")
+        except Exception as e:
+            logger.warning(f"FastLibra policies not initialized: {e}")
+
         # include_finished_set controls whether a separate set of finished
         # request ids should be included in the EngineCoreOutputs returned
         # by update_from_outputs(). This is currently used in the multi-engine
@@ -566,10 +575,23 @@ class Scheduler(SchedulerInterface):
                     # The request cannot be scheduled.
                     # Preempt the lowest-priority request.
                     if self.policy == SchedulingPolicy.PRIORITY:
-                        preempted_req = max(
-                            self.running,
-                            key=lambda r: (r.priority, r.arrival_time),
-                        )
+                        # FastLibra CostModel Preemption: Evict the request with the LOWEST Eva score
+                        if hasattr(self, 'fastlibra_policy'):
+                            try:
+                                preempted_req = min(
+                                    self.running,
+                                    key=lambda r: self.fastlibra_policy.calculate_eva_for_vllm_request(r, len(self.running))
+                                )
+                            except Exception:
+                                preempted_req = max(
+                                    self.running,
+                                    key=lambda r: (r.priority, r.arrival_time),
+                                )
+                        else:
+                            preempted_req = max(
+                                self.running,
+                                key=lambda r: (r.priority, r.arrival_time),
+                            )
                         self.running.remove(preempted_req)
                         if preempted_req in scheduled_running_reqs:
                             preempted_req_id = preempted_req.request_id

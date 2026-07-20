@@ -145,6 +145,14 @@ class KVCacheManager:
         # potential configs we could expose in the future.
         self.prefix_cache_stats = PrefixCacheStats() if log_stats else None
 
+        # FastLibra Implementation Injection
+        try:
+            from vllm.fastlibra import UnifiedBlockManager
+            self.fastlibra_manager = UnifiedBlockManager(total_hbm_blocks=1000, total_cpu_blocks=1000)
+            logger.info("FastLibra UnifiedBlockManager initialized successfully.")
+        except Exception as e:
+            logger.warning(f"FastLibra not initialized: {e}")
+
         self.coordinator = get_kv_cache_coordinator(
             kv_cache_config=kv_cache_config,
             max_model_len=self.max_model_len,
@@ -484,6 +492,16 @@ class KVCacheManager:
             num_tokens_main_model,
             num_encoder_tokens,
         )
+
+        # FastLibra Implementation Injection: Log physical KV block allocation
+        if hasattr(self, 'fastlibra_manager') and getattr(request, 'lora_request', None):
+            try:
+                self.fastlibra_manager.allocate_kv(
+                    lora_id=request.lora_request.lora_name, 
+                    token_id=f"{request.request_id}_{num_tokens_main_model}"
+                )
+            except Exception:
+                pass
 
         # P/D: delay caching blocks if we have to recv from
         # remote. Update state for locally cached blocks.
